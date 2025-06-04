@@ -1,0 +1,15 @@
+[package]
+name = "token-sale-program"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+borsh = "1.4.0"
+borsh-derive = "1.4.0"
+solana-program = "2.1.20"
+spl-token = { version="8.0.0", features = [ "no-entrypoint" ] }
+spl-associated-token-account = { version = "6.0.0", features = ["no-entrypoint"] }
+
+
+[lib]
+crate-type = ["cdylib", "lib"]
