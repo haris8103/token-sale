@@ -1,402 +1,221 @@
-use {
-    
-    // mpl_token_metadata::instruction as mpl_instruction,
-    solana_program::{
-        account_info::{next_account_info, AccountInfo},
-        entrypoint,
-        entrypoint::ProgramResult,
-        msg,
-        program::{invoke,invoke_signed},
-        program_pack::Pack,
-        pubkey::Pubkey,
-        rent::Rent,
-        system_instruction::{ transfer as tr, create_account,},
-        sysvar::Sysvar,
-        program_error::ProgramError,
-    },
-    spl_token::{instruction as token_instruction, state::Mint, state::Account as TokenAccount},
-    spl_associated_token_account::instruction as associated_token_account_instruction,
-    borsh::{BorshDeserialize, BorshSerialize},
-    crate::state::BuyConfig,
-    crate::instruction::{CreateTokenArgs, FirstBuyArgs, BuyArgs,},
-};
 
-#[derive(BorshSerialize, BorshDeserialize, Debug)]
-enum TokenVesting {
+
+// Anchor-compatible version of the original native Solana Rust code
+
+use anchor_lang::prelude::*;
+use anchor_spl::token::{self, Mint, Token, TokenAccount, MintTo, Transfer, SetAuthority};
+use anchor_spl::associated_token::AssociatedToken;
+use spl_token::instruction::AuthorityType::MintTokens;
+
+// Define your account state structure here (formerly BuyConfig)
+#[account]
+pub struct BuyConfig {
+    pub price: u64,
+    pub price_set: bool,
+    pub is_initialized: bool,
+}
+
+impl BuyConfig {
+    pub const LEN: usize = 8 + 8 + 1 + 1; // Update size for price (u64), bools, and discriminator
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize)]
+pub enum TokenVesting {
     Create(CreateTokenArgs),
     FirstBuy(FirstBuyArgs),
     Buy(BuyArgs),
 }
 
-pub fn process_instruction(
-    program_id: &Pubkey,
-    accounts: &[AccountInfo],
-    instruction_data: &[u8],
-) -> ProgramResult {
-    let instruction = TokenVesting::try_from_slice(instruction_data)?;
+#[derive(Accounts)]
+pub struct CreateToken<'info> {
+    #[account(init, payer = payer, space = 8 + BuyConfig::LEN, seeds = [b"pda-token"], bump)]
+    pub pda_account: Account<'info, BuyConfig>,
 
-    match instruction {
-        TokenVesting::Create(args) => create(program_id, accounts, args),
-        TokenVesting::FirstBuy(args) => first_buy(program_id, accounts, args),
-        TokenVesting::Buy(args) => buy(program_id, accounts, args),
-    }
+    #[account(init, payer = payer, space = 82)]
+    pub mint_account: Account<'info, Mint>,
+
+    #[account(init_if_needed, payer = payer, associated_token::mint = mint_account, associated_token::authority = pda_account)]
+    pub associated_token_account: Account<'info, TokenAccount>,
+
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    pub system_program: Program<'info, System>,
+    pub token_program: Program<'info, Token>,
+    pub rent: Sysvar<'info, Rent>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
 }
 
-pub fn create(
-    program_id: &Pubkey,
-    accounts: &[AccountInfo],
-    args: CreateTokenArgs,
-) -> ProgramResult {
-    // let args = CreateTokenArgs::try_from_slice(instruction_data)?;
+#[derive(Accounts)]
+pub struct FirstBuy<'info> {
+    #[account(mut)]
+    pub mint_account: Account<'info, Mint>,
 
-    let accounts_iter = &mut accounts.iter();
+    #[account(mut)]
+    pub payer: Signer<'info>,
 
-    let mint_account = next_account_info(accounts_iter)?;
-    // let _metadata_account = next_account_info(accounts_iter)?;
-    let payer = next_account_info(accounts_iter)?;
-    let rent = next_account_info(accounts_iter)?;
-    let system_program = next_account_info(accounts_iter)?;
-    let token_program = next_account_info(accounts_iter)?;
-    // let _token_metadata_program = next_account_info(accounts_iter)?;
-    let pda_account = next_account_info(accounts_iter)?;
-    let associated_token_account = next_account_info(accounts_iter)?;
-    let associated_token_program = next_account_info(accounts_iter)?;
-    
-    let (pda_account_key, bump) =
-    Pubkey::find_program_address(&[b"pda-token"], program_id);
-    if pda_account_key != *pda_account.key {
-        return Err(ProgramError::InvalidArgument);
-    }
-    let signers_seeds: &[&[u8]; 2] = &[b"pda-token",  &[bump]];
-    if pda_account.lamports() == 0 {
-        msg!("Creating pda account...");
-        invoke_signed(
-            &create_account(
-            payer.key,
-            pda_account.key,
-            (Rent::get()?).minimum_balance(BuyConfig::LEN),
-            BuyConfig::LEN as u64,
-            program_id,
-            ),
-            &[
-                pda_account.clone(),
-                payer.clone(),
-                system_program.clone(),
-            ],
-            &[signers_seeds]
-            
-        )?;
-    } else {
-        msg!("pda account exists.");
-    }
-    
-    // First create the account for the Mint
-    //
-    msg!("Creating mint account...");
-    msg!("Mint: {}", mint_account.key);
-    invoke(
-        &create_account(
-            payer.key,
-            mint_account.key,
-            (Rent::get()?).minimum_balance(Mint::LEN),
-            Mint::LEN as u64,
-            token_program.key,
-        ),
-        &[
-            mint_account.clone(),
-            payer.clone(),
-            system_program.clone(),
-            token_program.clone(),
-        ],
-    )?;
+    pub system_program: Program<'info, System>,
+    pub token_program: Program<'info, Token>,
 
-    // Now initialize that account as a Mint (standard Mint)
-    //
-    msg!("Initializing mint account...");
-    msg!("Mint: {}", mint_account.key);
-    invoke(
-        &token_instruction::initialize_mint(
-            token_program.key,
-            mint_account.key,
-            pda_account.key,
-            Some(pda_account.key),
-            args.token_decimals,
-        )?,
-        &[
-            mint_account.clone(),
-            pda_account.clone(),
-            token_program.clone(),
-            rent.clone(),
-        ],
-    )?;
+    #[account(mut, seeds = [b"pda-token"], bump)]
+    pub pda_account: Account<'info, BuyConfig>,
 
-    // Now create the account for that Mint's metadata
-    //
-    msg!("Creating metadata account...");
-    
+    #[account(mut, associated_token::mint = mint_account, associated_token::authority = pda_account)]
+    pub associated_token_account: Account<'info, TokenAccount>,
 
-    msg!("Token mint created successfully. pda {}, ata {}, mint {}, payer {}", pda_account.key, associated_token_account.key, mint_account.key, payer.key);
+    pub associated_token_program: Program<'info, AssociatedToken>,
 
-    
+    #[account(mut)]
+    pub destination_token_account: Account<'info, TokenAccount>,
+}
 
-    if associated_token_account.lamports() == 0 {
-        msg!("Creating associated token account...");
-        invoke(
-            &associated_token_account_instruction::create_associated_token_account(
-                payer.key,
-                pda_account.key,
-                mint_account.key,
-                token_program.key,
-            ),
-            &[
-                associated_token_account.clone(),
-                payer.clone(),
-                pda_account.clone(),
-                mint_account.clone(),
-                token_program.clone(),
-                associated_token_program.clone(),
-            ],
-        )?;
-    } else {
-        msg!("Associated token account exists.");
-    }
-    msg!("Associated Token Address: {}", associated_token_account.key);
+#[derive(Accounts)]
+pub struct Buy<'info> {
+    #[account(mut)]
+    pub mint_account: Account<'info, Mint>,
 
-    msg!(
-        "Minting {} tokens to associated token account...",
-        args.token_supply
+    #[account(mut)]
+    pub payer: Signer<'info>,
+
+    pub system_program: Program<'info, System>,
+    pub token_program: Program<'info, Token>,
+
+    #[account(mut, seeds = [b"pda-token"], bump)]
+    pub pda_account: Account<'info, BuyConfig>,
+
+    #[account(mut, associated_token::mint = mint_account, associated_token::authority = pda_account)]
+    pub associated_token_account: Account<'info, TokenAccount>,
+
+    pub associated_token_program: Program<'info, AssociatedToken>,
+
+    #[account(mut)]
+    pub destination_token_account: Account<'info, TokenAccount>,
+}
+
+pub fn create(ctx: Context<CreateToken>, args: CreateTokenArgs) -> Result<()> {
+    let seeds: &[&[u8]] = &[b"pda-token", &[ctx.bumps.pda_account]];
+    msg!("Hello");
+    let init_mint_ctx = CpiContext::new(
+        ctx.accounts.token_program.to_account_info(),
+        anchor_spl::token::InitializeMint {
+            mint: ctx.accounts.mint_account.to_account_info(),
+            rent: ctx.accounts.rent.to_account_info(),
+        },
     );
-    invoke_signed(
-        &token_instruction::mint_to(
-            token_program.key,
-            mint_account.key,
-            associated_token_account.key,
-            pda_account.key,
-            &[pda_account.key],
-            args.token_supply,
-        )?,
-        &[
-            mint_account.clone(),
-            pda_account.clone(),
-            associated_token_account.clone(),
-            token_program.clone(),
-        ],
-        &[signers_seeds],
+    token::initialize_mint(
+        init_mint_ctx,
+        args.token_decimals,
+        &ctx.accounts.pda_account.key(),
+        Some(&ctx.accounts.pda_account.key())
+    )?;
+    let binding = [&seeds[..]];
+    let mint_to_ctx = CpiContext::new_with_signer(
+        ctx.accounts.token_program.to_account_info(),
+        MintTo {
+            mint: ctx.accounts.mint_account.to_account_info(),
+            to: ctx.accounts.associated_token_account.to_account_info(),
+            authority: ctx.accounts.pda_account.to_account_info(),
+        },
+        &binding,
+    );
+    token::mint_to(mint_to_ctx, args.token_supply)?;
+   
+    let set_auth_ctx = CpiContext::new_with_signer(
+        ctx.accounts.token_program.to_account_info(),
+        SetAuthority {
+            current_authority: ctx.accounts.pda_account.to_account_info(),
+            account_or_mint: ctx.accounts.mint_account.to_account_info(),
+        },
+        &binding,
+    );
+    token::set_authority(
+        set_auth_ctx,
+        MintTokens,
+        None,
     )?;
 
-    msg!("Tokens minted to wallet successfully.");
-
-    invoke_signed(
-        &token_instruction::set_authority(
-            token_program.key,
-            mint_account.key,
-            None,
-            token_instruction::AuthorityType::MintTokens,
-            pda_account.key,
-            &[pda_account.key],
-        )?,
-        &[
-            mint_account.clone(),
-            pda_account.clone(),
-            token_program.clone(),
-        ],
-        &[signers_seeds],
-    )?;
-
-    msg!("Disabling future minting of this NFT...");
-    let buy_config = BuyConfig {
-        price: 0u64,
-        price_set: false,
-        is_initialized: true,
-    };
-    let mut data = pda_account.data.borrow_mut();
-    msg!("data header packed");
-    buy_config.pack_into_slice(&mut data);
-
+    let config = &mut ctx.accounts.pda_account;
+    config.price = 0;
+    config.price_set = false;
+    config.is_initialized = true;
     Ok(())
 }
 
-pub fn first_buy(
-    program_id: &Pubkey,
-    accounts: &[AccountInfo],
-    args: FirstBuyArgs,
-) -> ProgramResult {
+pub fn first_buy(ctx: Context<FirstBuy>, args: FirstBuyArgs) -> Result<()> {
+    let seeds: &[&[u8]] = &[b"pda-token", &[ctx.bumps.pda_account]];
+    let vesting_account = &ctx.accounts.associated_token_account;
+    let dest_account = &ctx.accounts.destination_token_account;
 
-    let accounts_iter = &mut accounts.iter();
-    let mint_account = next_account_info(accounts_iter)?;
-    let payer = next_account_info(accounts_iter)?;
-    let system_program = next_account_info(accounts_iter)?;
-    let token_program = next_account_info(accounts_iter)?;
-    let pda_account = next_account_info(accounts_iter)?;
-    let associated_token_account = next_account_info(accounts_iter)?;
-    let associated_token_program = next_account_info(accounts_iter)?;
-    let destination_token_account = next_account_info(accounts_iter)?;
-    
-    if destination_token_account.lamports() == 0 {
-        msg!("Creating associated token account...");
-        invoke(
-            &associated_token_account_instruction::create_associated_token_account(
-                payer.key,
-                payer.key,
-                mint_account.key,
-                token_program.key,
-            ),
-            &[
-                destination_token_account.clone(),
-                payer.clone(),
-                mint_account.clone(),
-                token_program.clone(),
-                associated_token_program.clone(),
-            ],
-        )?;
-    } else {
-        msg!("Associated token account exists.");
-    }
-    let (pda_account_key, bump) =
-    Pubkey::find_program_address(&[b"pda-token"], program_id);
-    if pda_account_key != *pda_account.key {
-        return Err(ProgramError::InvalidArgument);
-    }
-    let signers_seeds: &[&[u8]; 2] = &[b"pda-token",  &[bump]];
-    let ata_data = TokenAccount::unpack_from_slice(&associated_token_account.try_borrow_data()?)?;
-    {
-        let pda_data_state = BuyConfig::unpack(&pda_account.try_borrow_data()?)?;
-        if pda_data_state.price_set {
-            msg!("price set");
-            return Err(ProgramError::InvalidInstructionData);
-        }
-    }
-    msg!("Token balance in ATA: {}", ata_data.amount);
-    
-    let token_amount =  ata_data.amount/100 *(args.bps as u64);
-    if token_amount == 0 {
-        return Err(ProgramError::InvalidInstructionData);
-    }
+    let token_amount = vesting_account.amount / 100 * args.bps as u64;
+    require!(token_amount > 0, ErrorCode::ZeroTokenAmount);
+    let binding = [&seeds[..]];
+    let transfer_ctx = CpiContext::new_with_signer(
+        ctx.accounts.token_program.to_account_info(),
+        Transfer {
+            from: vesting_account.to_account_info(),
+            to: dest_account.to_account_info(),
+            authority: ctx.accounts.pda_account.to_account_info(),
+        },
+        &binding,
+    );
+    token::transfer(transfer_ctx, token_amount)?;
 
-    let transfer_tokens_from_vesting_account = token_instruction::transfer(
-            token_program.key,
-            associated_token_account.key,
-            destination_token_account.key,
-            &pda_account.key,
-            &[],
-            token_amount,
-        )?;
+    **ctx.accounts.pda_account.to_account_info().try_borrow_mut_lamports()? += args.amount;
+    **ctx.accounts.payer.to_account_info().try_borrow_mut_lamports()? -= args.amount;
 
-        invoke_signed(
-            &transfer_tokens_from_vesting_account,
-            &[
-
-                token_program.clone(),
-                associated_token_account.clone(),
-                destination_token_account.clone(),
-                pda_account.clone(),
-            ],
-            &[signers_seeds]
-        )?;
-
-        invoke(
-            &tr(payer.key, pda_account.key, args.amount),
-            &[
-                payer.clone(),
-                pda_account.clone(),
-                system_program.clone(),
-            ],
-        )?;
-    let mut pda_data = pda_account.data.borrow_mut();
-    let mut pda_data_state = BuyConfig::unpack(&pda_data)?;
-    pda_data_state.price = args.amount/token_amount;
-    pda_data_state.price_set = true;
-    msg!("{}, {}, {}", pda_data_state.price, args.amount, token_amount);
-    pda_data_state.pack_into_slice(&mut pda_data);
+    let config = &mut ctx.accounts.pda_account;
+    require!(!config.price_set, ErrorCode::PriceAlreadySet);
+    config.price = args.amount / token_amount;
+    config.price_set = true;
     Ok(())
 }
 
-pub fn buy(
-    program_id: &Pubkey,
-    accounts: &[AccountInfo],
-    args: BuyArgs,
-) -> ProgramResult {
+pub fn buy(ctx: Context<Buy>, args: BuyArgs) -> Result<()> {
+    let seeds: &[&[u8]] = &[b"pda-token", &[ctx.bumps.pda_account]];
+    let config = &ctx.accounts.pda_account;
+    require!(config.price > 0, ErrorCode::ZeroPrice);
 
-    let accounts_iter = &mut accounts.iter();
+    let token_amount = args.amount / config.price;
+    require!(token_amount > 0, ErrorCode::ZeroTokenAmount);
+    let binding = [&seeds[..]];
+    let transfer_ctx = CpiContext::new_with_signer(
+        ctx.accounts.token_program.to_account_info(),
+        Transfer {
+            from: ctx.accounts.associated_token_account.to_account_info(),
+            to: ctx.accounts.destination_token_account.to_account_info(),
+            authority: ctx.accounts.pda_account.to_account_info(),
+        },
+        &binding,
+    );
+    token::transfer(transfer_ctx, token_amount)?;
 
-    let mint_account = next_account_info(accounts_iter)?;
-    let payer = next_account_info(accounts_iter)?;
-    let system_program = next_account_info(accounts_iter)?;
-    let token_program = next_account_info(accounts_iter)?;
-    let pda_account = next_account_info(accounts_iter)?;
-    let associated_token_account = next_account_info(accounts_iter)?;
-    let associated_token_program = next_account_info(accounts_iter)?;
-    let destination_token_account = next_account_info(accounts_iter)?;
-    let (pda_account_key, bump) =
-    Pubkey::find_program_address(&[b"pda-token"], program_id);
-    if pda_account_key != *pda_account.key {
-        return Err(ProgramError::InvalidArgument);
-    }
-    let mut token_amount = 0;
-    let signers_seeds: &[&[u8]; 2] = &[b"pda-token",  &[bump]];
-    {
-        let pda_data_state = BuyConfig::unpack(&pda_account.try_borrow_data()?)?;
-        
-        if pda_data_state.price == 0 {
-            msg!("Price is zero");
-            return Err(ProgramError::InvalidInstructionData);
-        }
-        token_amount =  args.amount / pda_data_state.price;
-    }
-
-    if destination_token_account.lamports() == 0 {
-        msg!("Creating associated token account...");
-        invoke(
-            &associated_token_account_instruction::create_associated_token_account(
-                payer.key,
-                payer.key,
-                mint_account.key,
-                token_program.key,
-            ),
-            &[
-                destination_token_account.clone(),
-                payer.clone(),
-                mint_account.clone(),
-                token_program.clone(),
-                associated_token_program.clone(),
-            ],
-        )?;
-    } else {
-        msg!("Associated token account exists.");
-    }
-    
-    if token_amount == 0 {
-        return Err(ProgramError::InvalidInstructionData);
-    }
-    let transfer_tokens_from_vesting_account = token_instruction::transfer(
-            token_program.key,
-            associated_token_account.key,
-            destination_token_account.key,
-            &pda_account.key,
-            &[],
-            token_amount,
-            
-        )?;
-
-        invoke_signed(
-            &transfer_tokens_from_vesting_account,
-            &[
-                token_program.clone(),
-                associated_token_account.clone(),
-                destination_token_account.clone(),
-                pda_account.clone(),
-            ],
-            &[signers_seeds]
-        )?;
-
-        invoke(
-            &tr(payer.key, pda_account.key, args.amount),
-            &[
-                payer.clone(),
-                pda_account.clone(),
-                system_program.clone(),
-            ],
-        )?;
-    
+    **ctx.accounts.pda_account.to_account_info().try_borrow_mut_lamports()? += args.amount;
+    **ctx.accounts.payer.to_account_info().try_borrow_mut_lamports()? -= args.amount;
     Ok(())
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
+pub struct CreateTokenArgs {
+    pub token_supply: u64,
+    pub token_decimals: u8,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
+pub struct FirstBuyArgs {
+    pub bps: u16,
+    pub amount: u64,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
+pub struct BuyArgs {
+    pub amount: u64,
+}
+
+#[error_code]
+pub enum ErrorCode {
+    #[msg("Token amount must be greater than 0")]
+    ZeroTokenAmount,
+    #[msg("Price is zero")]
+    ZeroPrice,
+    #[msg("Price already set")]
+    PriceAlreadySet,
 }
