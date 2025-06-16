@@ -1,0 +1,6 @@
+[provider]
+cluster = "localnet"
+wallet = "/home/haris/.config/solana/id.json"
+
+[scripts]
+test = "mocha -r ts-node/register tests/**/*.ts"
