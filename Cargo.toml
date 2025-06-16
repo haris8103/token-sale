@@ -3,13 +3,22 @@ name = "token-sale-program"
 version = "0.1.0"
 edition = "2021"
 
-[dependencies]
-borsh = "1.4.0"
-borsh-derive = "1.4.0"
-solana-program = "2.1.20"
-spl-token = { version="8.0.0", features = [ "no-entrypoint" ] }
-spl-associated-token-account = { version = "6.0.0", features = ["no-entrypoint"] }
+[profile.release]
+overflow-checks = true
 
+[features]
+default = []
+cpi = ["no-entrypoint"]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
+
+[dependencies]
+anchor-lang = { version = "0.31.1", features = ["init-if-needed"] }
+anchor-spl = { version = "0.31.1", features = ["metadata"] }
+spl-token = { version = "7.0.0", features = ["no-entrypoint"] }
 
 [lib]
 crate-type = ["cdylib", "lib"]
+
